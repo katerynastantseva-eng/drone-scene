@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drone Scene</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; width: 100vw; height: 100vh; }
+    canvas { display: block; width: 100% !important; height: 100% !important; }
+  </style>
+</head>
+<body>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from "three"
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js"
+
+    const MODEL_URL = "https://raw.githubusercontent.com/katerynastantseva-eng/drone3D/main/drone3D.glb"
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    renderer.setSize(window.innerWidth, window.innerHeight)
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setClearColor(0x000000, 1)
+    document.body.appendChild(renderer.domElement)
+
+    const scene = new THREE.Scene()
+    const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 100)
+    camera.position.set(0, 0, 8)
+
+    // Освітлення
+    scene.add(new THREE.AmbientLight(0xffffff, 0.2))
+    const key = new THREE.DirectionalLight(0xffffff, 1.8)
+    key.position.set(3, 4, 5)
+    scene.add(key)
+    const rim = new THREE.DirectionalLight(0xffffff, 2.5)
+    rim.position.set(-3, 0, -4)
+    scene.add(rim)
+    const top = new THREE.DirectionalLight(0xffffff, 1.5)
+    top.position.set(0, 4, -3)
+    scene.add(top)
+    const back = new THREE.DirectionalLight(0xffffff, 1.0)
+    back.position.set(0, -2, 3)
+    scene.add(back)
+
+    const pivot = new THREE.Group()
+    scene.add(pivot)
+
+    let droneGroup = null
+    let particles = null
+    let dronePos = []
+    let startPos = []
+    let dissolveVel = []
+    let isLoaded = false
+    let phase = "assemble"
+    let assembleT = 0
+    let dissolveT = 0
+    let isDissolving = false
+    let scrollScale = 1.0
+    let targetScrollScale = 1.0
+    const targetRot = { x: 0, y: 0 }
+    const currentRot = { x: 0, y: 0 }
+    const clock = new THREE.Clock()
+    const raycaster = new THREE.Raycaster()
+    const hitMeshes = []
+
+    const easeOut = t => 1 - Math.pow(1 - t, 3)
+    const easeInOut = t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2
+
+    function buildParticles() {
+      const positions = []
+      droneGroup.updateMatrixWorld(true)
+      droneGroup.traverse(child => {
+        if (child.isMesh) {
+          const pos = child.geometry.attributes.position
+          for (let i = 0; i < pos.count; i++) {
+            const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i))
+            v.applyMatrix4(child.matrixWorld)
+            positions.push(v.x, v.y, v.z)
+          }
+        }
+      })
+      const step = Math.max(1, Math.floor(positions.length / 3 / 6000))
+      const sampled = []
+      for (let i = 0; i < positions.length / 3; i += step) {
+        sampled.push(positions[i*3], positions[i*3+1], positions[i*3+2])
+      }
+      dronePos = [...sampled]
+      for (let i = 0; i < sampled.length / 3; i++) {
+        const r = 2 + Math.random() * 2
+        const theta = Math.random() * Math.PI * 2
+        const phi = Math.acos(2 * Math.random() - 1)
+        startPos.push(r*Math.sin(phi)*Math.cos(theta), r*Math.sin(phi)*Math.sin(theta), r*Math.cos(phi))
+        const x = sampled[i*3], y = sampled[i*3+1], z = sampled[i*3+2]
+        const len = Math.sqrt(x*x+y*y+z*z) || 1
+        dissolveVel.push(
+          (x/len+(Math.random()-.5)*.6)*1.4,
+          (y/len+(Math.random()-.5)*.6)*1.4,
+          (z/len+(Math.random()-.5)*.6)*1.4
+        )
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute("position", new THREE.Float32BufferAttribute([...startPos], 3))
+      particles = new THREE.Points(geo, new THREE.PointsMaterial({
+        color: 0xffffff, size: 0.008, transparent: true, opacity: 1,
+        sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      }))
+      pivot.add(particles)
+      isLoaded = true
+    }
+
+    // Завантаження дрона
+    const loader = new GLTFLoader()
+    loader.load(MODEL_URL, gltf => {
+      droneGroup = gltf.scene
+      const box = new THREE.Box3().setFromObject(droneGroup)
+      const center = box.getCenter(new THREE.Vector3())
+      const size = box.getSize(new THREE.Vector3())
+      const s = 1.8 / Math.max(size.x, size.y, size.z)
+      droneGroup.scale.setScalar(s)
+      droneGroup.position.sub(center.multiplyScalar(s))
+      droneGroup.traverse(child => {
+        if (child.isMesh) {
+          child.material = new THREE.MeshStandardMaterial({
+            color: 0x111111,
+            metalness: 0.8,
+            roughness: 0.3,
+            transparent: true,
+            opacity: 0.6,
+          })
+          hitMeshes.push(child)
+        }
+      })
+      pivot.add(droneGroup)
+      buildParticles()
+    })
+
+    function animate() {
+      requestAnimationFrame(animate)
+      const delta = clock.getDelta()
+      if (!isLoaded || !particles) { renderer.render(scene, camera); return }
+
+      currentRot.x += (targetRot.x - currentRot.x) * 0.06
+      currentRot.y += (targetRot.y - currentRot.y) * 0.06
+      pivot.rotation.x = currentRot.x
+      pivot.rotation.y = currentRot.y
+      scrollScale += (targetScrollScale - scrollScale) * 0.06
+      pivot.scale.setScalar(scrollScale)
+
+      const posAttr = particles.geometry.attributes.position
+      const total = posAttr.count
+
+      if (phase === "assemble") {
+        assembleT = Math.min(assembleT + delta * 0.727, 1)
+        const t = easeOut(assembleT)
+        for (let i = 0; i < total; i++) {
+          posAttr.setXYZ(i,
+            startPos[i*3] + (dronePos[i*3] - startPos[i*3]) * t,
+            startPos[i*3+1] + (dronePos[i*3+1] - startPos[i*3+1]) * t,
+            startPos[i*3+2] + (dronePos[i*3+2] - startPos[i*3+2]) * t
+          )
+        }
+        posAttr.needsUpdate = true
+        if (droneGroup) {
+          const op = Math.max(0, (assembleT - 0.7) / 0.3)
+          droneGroup.traverse(c => { if (c.isMesh) c.material.opacity = op })
+        }
+        particles.material.opacity = 1 - Math.max(0, (assembleT - 0.8) / 0.2)
+        if (assembleT >= 1) { phase = "idle"; particles.material.opacity = 0 }
+        renderer.render(scene, camera)
+        return
+      }
+
+      if (isDissolving) {
+        dissolveT = Math.min(dissolveT + delta * 1.8, 1)
+      } else {
+        dissolveT = Math.max(dissolveT - delta * 2.5, 0)
+      }
+      const p = easeInOut(dissolveT)
+      for (let i = 0; i < total; i++) {
+        posAttr.setXYZ(i,
+          dronePos[i*3] + dissolveVel[i*3] * p,
+          dronePos[i*3+1] + dissolveVel[i*3+1] * p,
+          dronePos[i*3+2] + dissolveVel[i*3+2] * p
+        )
+      }
+      posAttr.needsUpdate = true
+      if (droneGroup) droneGroup.traverse(c => { if (c.isMesh) c.material.opacity = 1 - p * 0.95 })
+      particles.material.opacity = p * 0.9
+      renderer.render(scene, camera)
+    }
+
+    // Події
+    document.addEventListener("mousemove", e => {
+      if (phase !== "idle") return
+      targetRot.y = ((e.clientX / window.innerWidth) * 2 - 1) * 0.55 * Math.PI
+      targetRot.x = (-((e.clientY / window.innerHeight) * 2 - 1)) * 0.35 * Math.PI
+    })
+
+    document.addEventListener("mousedown", e => {
+      if (phase !== "idle") return
+      const x = (e.clientX / window.innerWidth) * 2 - 1
+      const y = -((e.clientY / window.innerHeight) * 2 - 1)
+      raycaster.setFromCamera(new THREE.Vector2(x, y), camera)
+      if (raycaster.intersectObjects(hitMeshes, true).length > 0) isDissolving = true
+    })
+
+    document.addEventListener("mouseup", () => { isDissolving = false })
+
+    document.addEventListener("wheel", e => {
+      targetScrollScale = Math.min(2.5, Math.max(1.0, targetScrollScale + e.deltaY * 0.001))
+    })
+
+    // Слухаємо повідомлення від Framer (через postMessage)
+    window.addEventListener("message", e => {
+      if (e.data === "dissolve") isDissolving = true
+      if (e.data === "restore") isDissolving = false
+    })
+
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight
+      camera.updateProjectionMatrix()
+      renderer.setSize(window.innerWidth, window.innerHeight)
+    })
+
+    animate()
+  </script>
+</body>
+</html>
